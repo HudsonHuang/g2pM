@@ -1,4 +1,6 @@
 import pickle
+import torch
+from torch import nn
 
 import numpy as np
 import os
@@ -9,31 +11,29 @@ BOS_TOKEN = "시"
 EOS_TOKEN = "끝"
 SPLIT_TOKEN = "▁"
 
-class torchG2pM(nn.Module):
+class G2pMT(nn.Module):
     def __init__(self):
         super().__init__()
-        # NN
-        self.embedding = nn.Embedding(5398, 64)
-        self.lstm = nn.LSTM(64, 32, 1, bidirectional=True)
-        self.logit_layer = nn.Sequential(nn.Linear(64, 32), nn.ReLU(), nn.Linear(32, 876))
 
-        # load char dict
         self.cedict = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/digest_cedict.pkl', 'rb'))
         self.char2idx = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/char2idx.pkl', 'rb'))
         class2idx = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/class2idx.pkl', 'rb'))
+        state_dict = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/np_ckpt.pkl', 'rb'))
         self.idx2class = {idx: pron for pron, idx in class2idx.items()}
 
-        # load state dict
-        state_dict = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/np_ckpt.pkl', 'rb'))
+        self.embedding = nn.Embedding(5398, 64)
+        self.lstm = nn.LSTM(64, 32, 1, bidirectional=True)
+        self.logit_layer = nn.Sequential(nn.Linear(64, 32), nn.ReLU(), nn.Linear(32, 876))
         for k, v in state_dict.items():
             state_dict[k] = torch.tensor(v)
-
+        self.load_state_dict(state_dict)
 
     def forward(self, x, target_idx):
         batch_size = x.shape[1]
         lengths = torch.sum(torch.sign(x), axis=1)
         x = self.embedding(x)
         x, _ = self.lstm(x) # seq_len, batch, num_directions * hidden_size
+        # x = x.squeeze(1)
 
         if batch_size == 1:
             x = np.squeeze(x, axis=0)  # [t,d]
@@ -42,7 +42,9 @@ class torchG2pM(nn.Module):
             x = x[np.arange(len(lengths)), target_idx]
 
         x = self.logit_layer(x)
+        print("logit_layer", x.shape)
         return torch.argmax(x, 1)
+        
 
     def predict(self, inputs, target_idx):
         return self.forward(torch.tensor(inputs).long(), target_idx).numpy()
@@ -353,3 +355,11 @@ class G2pM(object):
             ret = pron_str.split(delimiter)
             
             return ret
+
+if __name__ == "__main__":    
+    g2 = G2pM()
+    print(g2("你好你怎么又，让我我屏幕期货佛批号佛号鬼欧冠IP古·1"))
+
+    
+    g2 = G2pMT()
+    print(g2("你好你怎么又，让我我屏幕期货佛批号佛号鬼欧冠IP古·1"))
