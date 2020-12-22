@@ -9,6 +9,110 @@ BOS_TOKEN = "시"
 EOS_TOKEN = "끝"
 SPLIT_TOKEN = "▁"
 
+class torchG2pM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # NN
+        self.embedding = nn.Embedding(5398, 64)
+        self.lstm = nn.LSTM(64, 32, 1, bidirectional=True)
+        self.logit_layer = nn.Sequential(nn.Linear(64, 32), nn.ReLU(), nn.Linear(32, 876))
+
+        # load char dict
+        self.cedict = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/digest_cedict.pkl', 'rb'))
+        self.char2idx = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/char2idx.pkl', 'rb'))
+        class2idx = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/class2idx.pkl', 'rb'))
+        self.idx2class = {idx: pron for pron, idx in class2idx.items()}
+
+        # load state dict
+        state_dict = pickle.load(open(os.path.dirname(os.path.abspath(__file__)) + '/np_ckpt.pkl', 'rb'))
+        for k, v in state_dict.items():
+            state_dict[k] = torch.tensor(v)
+
+
+    def forward(self, x, target_idx):
+        batch_size = x.shape[1]
+        lengths = torch.sum(torch.sign(x), axis=1)
+        x = self.embedding(x)
+        x, _ = self.lstm(x) # seq_len, batch, num_directions * hidden_size
+
+        if batch_size == 1:
+            x = np.squeeze(x, axis=0)  # [t,d]
+            x = x[target_idx]
+        else:
+            x = x[np.arange(len(lengths)), target_idx]
+
+        x = self.logit_layer(x)
+        return torch.argmax(x, 1)
+
+    def predict(self, inputs, target_idx):
+        return self.forward(torch.tensor(inputs).long(), target_idx).numpy()
+
+    def __call__(self, sent, char_split=False, tone=True):
+        input_ids = []
+        poly_indices = []
+        pros_lst = []
+        for idx, char in enumerate(sent):
+            if char in self.char2idx:
+                char_id = self.char2idx[char]
+            else:
+                char_id = self.char2idx[UNK_TOKEN]
+            input_ids.append(char_id)
+
+            if char in self.cedict:
+                prons = self.cedict[char]
+
+                # polyphonic character
+                if len(prons) > 1:
+                    poly_indices.append(idx)
+                    pros_lst.append(SPLIT_TOKEN)
+                else:
+                    pron = prons[0]
+                    # remove the digit which denotes a tone
+                    if not tone:
+                        pron = pron[:-1]
+                    pros_lst.append(pron)
+            else:
+                pros_lst.append(char)
+
+        if len(poly_indices) > 0:
+            # insert and append BOS, EOS ID
+            BOS_ID = self.char2idx[BOS_TOKEN]
+            EOS_ID = self.char2idx[EOS_TOKEN]
+            input_ids.insert(0, BOS_ID)
+            input_ids.append(EOS_ID)
+            # BOS_ID is inserted at the first position, so +1 for poly idx
+            _poly_indices = [idx + 1 for idx in poly_indices]
+
+            input_ids = np.array(input_ids, dtype=np.int32)
+            input_ids = np.expand_dims(input_ids, axis=0)
+            # input_ids = np.tile(input_ids, (len(poly_indices), 1))
+            # polyphone disambiguation
+            preds = self.predict(input_ids, _poly_indices)
+
+            for idx, pred in zip(poly_indices, preds):
+                pron = self.idx2class[pred]
+                if not tone:
+                    pron = pron[:-1]
+                pros_lst[idx] = pron
+
+        if char_split:
+            return pros_lst
+        else:
+            pron_str = ""
+            delimiter = "|"
+            for pro in pros_lst:
+                if len(pro) == 1:
+                    pron_str += pro
+                else:
+                    if len(pron_str) > 0 and pron_str[-1] != delimiter:
+                        pro = delimiter + pro
+                    pron_str += pro + delimiter
+            if pron_str[-1] == delimiter:
+                pron_str = pron_str[:-1]
+            ret = pron_str.split(delimiter)
+            
+            return ret
+
 class G2pM(object):
     # one-layer bi-LSTM with two layered FC
     def __init__(self):
